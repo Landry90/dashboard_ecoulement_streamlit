@@ -887,9 +887,9 @@ with tab5:
             {
                 "Compte": a["id"],
                 "Modèle": a["model"],
-                "μ (drift)": round(a["mu"], 6),
-                "Uₘᵢₙ": round(a["umin"], 6),
-                "k = μ+Uₘᵢₙ": round(a["k"], 6),
+                ### "μ (drift)": round(a["mu"], 6),
+                ### "Uₘᵢₙ": round(a["umin"], 6),
+                ### "k = μ+Uₘᵢₙ": round(a["k"], 6),
                 "Stable H1": fmt_pct(float(decay_share(1, a["k"], a["cap"]))),
                 "Stable H12": fmt_pct(float(decay_share(12, a["k"], a["cap"]))),
             }
