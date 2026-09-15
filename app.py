@@ -53,16 +53,26 @@ st.set_page_config(
     layout="wide",
 )
 
-# CSS minimal pour imposer la charte blanc / gris / rouge / noir à Streamlit
+# CSS pour imposer la charte blanc / gris / rouge / noir à Streamlit, quel que
+# soit le thème clair/sombre détecté par le navigateur de l'utilisateur.
 st.markdown(
     f"""
     <style>
+    /* Couleur de texte par défaut sur toute l'app (corrige le texte blanc sur
+       fond blanc quand le navigateur est en mode sombre) */
+    .stApp, .stApp * {{ color: {BLACK}; }}
     .stApp {{ background-color: {WHITE}; }}
+    [data-testid="stSidebar"] {{ background-color: {GRAY_50}; }}
     h1, h2, h3 {{ color: {BLACK}; }}
     [data-testid="stMetricValue"] {{ color: {RED}; }}
     [data-testid="stMetricLabel"] {{ color: {GRAY_600}; }}
     .stTabs [aria-selected="true"] {{ color: {RED} !important; border-bottom-color: {RED} !important; }}
     div[role="radiogroup"] label {{ color: {BLACK}; }}
+    /* Champs de saisie / éditeurs de données : forcer aussi le fond en clair */
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"],
+    .stTextInput input, .stNumberInput input, .stSelectbox, .stMultiSelect {{
+        background-color: {WHITE}; color: {BLACK};
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -508,6 +518,39 @@ def decay_share(H, k: float, cap: bool = True):
     return np.minimum(1.0, survie) if cap else survie
 
 
+def empirical_survival_curve(values: list, hmax: int) -> pd.DataFrame:
+    """
+    Courbe de décroissance empirique d'un compte, calculée uniquement à
+    partir de sa série historique réelle (aucun paramètre de modèle k, μ
+    ou Umin n'intervient).
+
+    Pour chaque horizon H, on balaie toutes les fenêtres glissantes de
+    l'historique et on prend le ratio encours(t+H) / encours(t) :
+
+        ratio(t, H)      = encours(t+H) / encours(t)
+        S_empirique(H)   = médiane_t( ratio(t, H) )
+
+    La médiane (plutôt que la moyenne) limite l'influence d'un pic ou
+    d'un creux ponctuel isolé dans la série.
+
+    Paramètres
+    ----------
+    values : série mensuelle réelle des encours du compte (ordre chronologique)
+    hmax   : horizon maximal (en mois) à calculer
+
+    Retourne
+    --------
+    DataFrame avec les colonnes "H" et "S" (part médiane de l'encours de
+    départ encore présente H mois plus tard).
+    """
+    n = len(values)
+    rows = []
+    for H in range(0, hmax + 1):
+        ratios = [values[i + H] / values[i] for i in range(n - H) if values[i]]
+        rows.append({"H": H, "S": float(np.median(ratios)) if ratios else np.nan})
+    return pd.DataFrame(rows)
+
+
 def decompose_stable_volatile(accounts: list, H: float) -> pd.DataFrame:
     """
     Décompose l'encours de chaque compte en partie stable / partie volatile
@@ -635,17 +678,27 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 # ======================================================================
 # TAB 1 — Fonctions d'écoulement
 # ======================================================================
+# ======================================================================
+# TAB 1 — Fonctions d'écoulement
+# ======================================================================
 with tab1:
-    st.subheader("Fonction d'écoulement S(H)")
-    st.latex(r"S(H) = \min\Big(1,\ \exp\big(H \times (\mu + U_{min})\big)\Big) \qquad k = \mu + U_{min}")
+    st.subheader("Courbe de décroissance empirique")
+    st.latex(r"S_{\text{empirique}}(H) = \text{médiane}_t\left(\dfrac{\text{encours}(t+H)}{\text{encours}(t)}\right)")
     st.caption(
-        "S(H) est la part de l'encours d'un compte encore considérée comme stable à "
-        "l'horizon H (en mois). k est calibré une fois pour toutes sur l'historique du compte."
+        "Pour chaque horizon H, on balaie toutes les fenêtres glissantes de l'historique "
+        "réel du compte et on prend la part médiane de l'encours de départ encore présente "
+        "H mois plus tard. Cette courbe ne dépend d'aucun paramètre de modèle (μ, Umin, k) : "
+        "elle est calculée uniquement à partir des séries observées."
     )
 
+    hist_len = len(HIST["dates"])
+    hmax_ceiling = max(6, hist_len - 1)
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        hmax = st.slider("Horizon affiché (mois)", 6, 91, 24, key="hmax_tab1")
+        hmax = st.slider(
+            "Horizon affiché (mois)", 6, min(91, hmax_ceiling),
+            min(24, hmax_ceiling), key="hmax_tab1",
+        )
     with col_b:
         selected = st.multiselect(
             "Comptes affichés",
@@ -653,15 +706,16 @@ with tab1:
             default=[a["id"] for a in ACCOUNTS],
         )
 
-    H_range = np.arange(0, hmax + 1)
+    curves = {a["id"]: empirical_survival_curve(HIST[a["id"]], hmax) for a in ACCOUNTS}
+
     fig = go.Figure()
     for a in ACCOUNTS:
         if a["id"] not in selected:
             continue
-        y = decay_share(H_range, a["k"], a["cap"]) * 100
+        curve = curves[a["id"]]
         fig.add_trace(
             go.Scatter(
-                x=H_range, y=y, mode="lines", name=a["id"],
+                x=curve["H"], y=curve["S"] * 100, mode="lines", name=a["id"],
                 line=dict(color=a["color"], width=2.5),
             )
         )
@@ -669,23 +723,28 @@ with tab1:
         **PLOTLY_LAYOUT,
         height=460,
         xaxis=dict(title="Horizon (mois)", **GRID),
-        yaxis=dict(title="Part stable de l'encours (%)", range=[0, 100], **GRID),
+        yaxis=dict(title="Part médiane de l'encours conservée (%)", **GRID),
     )
     st.plotly_chart(fig, width='stretch')
 
-    show_source(decay_share)
+    show_source(empirical_survival_curve)
 
     st.subheader("Repères clés par compte")
+
+    def _repere(acc_id: str, H: int) -> float:
+        c = curves[acc_id]
+        row = c[c["H"] == H]
+        return float(row["S"].iloc[0]) if not row.empty else float("nan")
+
     reperes = pd.DataFrame(
         [
             {
                 "Compte": a["id"],
                 "Modèle": a["model"],
-                "k = μ+Uₘᵢₙ": round(a["k"], 6),
-                "S(1)": fmt_pct(float(decay_share(1, a["k"], a["cap"]))),
-                "S(6)": fmt_pct(float(decay_share(6, a["k"], a["cap"]))),
-                "S(12)": fmt_pct(float(decay_share(12, a["k"], a["cap"]))),
-                "S(24)": fmt_pct(float(decay_share(24, a["k"], a["cap"]))),
+                "S(1)": fmt_pct(_repere(a["id"], min(1, hmax))),
+                "S(6)": fmt_pct(_repere(a["id"], min(6, hmax))),
+                "S(12)": fmt_pct(_repere(a["id"], min(12, hmax))),
+                "S(24)": fmt_pct(_repere(a["id"], min(24, hmax))),
             }
             for a in ACCOUNTS
         ]
@@ -828,9 +887,9 @@ with tab5:
             {
                 "Compte": a["id"],
                 "Modèle": a["model"],
-                ### "μ (drift)": round(a["mu"], 6),
-                ### "Uₘᵢₙ": round(a["umin"], 6),
-                ### "k = μ+Uₘᵢₙ": round(a["k"], 6),
+                "μ (drift)": round(a["mu"], 6),
+                "Uₘᵢₙ": round(a["umin"], 6),
+                "k = μ+Uₘᵢₙ": round(a["k"], 6),
                 "Stable H1": fmt_pct(float(decay_share(1, a["k"], a["cap"]))),
                 "Stable H12": fmt_pct(float(decay_share(12, a["k"], a["cap"]))),
             }
